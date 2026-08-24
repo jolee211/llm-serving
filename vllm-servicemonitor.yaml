@@ -1,0 +1,14 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vllm-qwen
+  labels:
+    release: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: vllm-qwen
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
