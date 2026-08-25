@@ -1,0 +1,26 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-knee
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: grafana/k6:latest
+          args:
+            - "run"
+            - "--env"
+            - "VUS=__VUS__"
+            - "--env"
+            - "TARGET=http://vllm-qwen.default.svc.cluster.local:8000"
+            - "/scripts/k6-load.js"
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+      volumes:
+        - name: script
+          configMap:
+            name: k6-script

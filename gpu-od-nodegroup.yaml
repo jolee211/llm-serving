@@ -1,0 +1,20 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: llm-serving
+  region: us-east-1
+
+managedNodeGroups:
+  - name: gpu-od
+    instanceTypes: ["g5.xlarge", "g5.2xlarge"]
+    desiredCapacity: 1
+    minSize: 0
+    maxSize: 1
+    volumeSize: 100
+    labels:
+      workload: gpu
+    taints:
+      - key: nvidia.com/gpu
+        value: "true"
+        effect: NoSchedule

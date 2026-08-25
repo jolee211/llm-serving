@@ -62,3 +62,34 @@ Results:
 Reading:
 - 8 concurrent requests nowhere near saturates the L4. KV cache under 1% and 60ms TTFT mean requests barely queue.
 - This run establishes the healthy baseline, not capacity. The knee point (where latency degrades as VUs climb) is the real single-GPU capacity number. Next run: 32 and 64 VUs, in-cluster.
+
+## Knee-point sweep (2026-08-24)
+
+Setup:
+- k6 as an in-cluster Job (`k6-job.yaml` + `run-knee-sweep.sh`), 3 minutes per level, same 128-max-token chat workload (~49 actual tokens per completion).
+- GPU: NVIDIA A10G (`g5.xlarge`, on-demand fallback nodegroup; spot was dry that day, see below). Different card than the 08-23 baseline (L4), so the two runs are not directly comparable.
+
+| VUs | req/s | p50    | p95    | gen tok/s | TTFT p95 | KV cache max |
+|----:|------:|-------:|-------:|----------:|---------:|-------------:|
+|   8 |  14.3 |  567ms |  708ms |       704 |     39ms |         0.2% |
+|  16 |  26.3 |  617ms |  771ms |     1,294 |     39ms |         0.3% |
+|  32 |  41.7 |  774ms |  963ms |     2,054 |     59ms |         0.5% |
+|  64 |  43.3 |  1.49s |  1.88s |     2,123 |     99ms |         1.0% |
+
+Findings:
+- Knee sits between 32 and 64 concurrent: 64 VUs buys +3% throughput for +95% p95. Operating point: 32 concurrent, ~42 req/s, ~2,050 tok/s, p95 under 1s.
+- `vllm:num_requests_waiting` stayed at 0 through the whole sweep. vLLM's continuous batching admits everything and degrades per-token speed instead of queueing. Autoscaling on queue depth would never trigger for this workload shape; scale on running-request count or inter-token latency instead.
+- Port-forward overhead was real: the same 8-VU load ran at 14.3 req/s in-cluster vs 7.6 req/s through `kubectl port-forward`, at roughly half the p95. Never benchmark through a port-forward.
+- Workload caveat: ~49-token completions never touch KV cache (1% peak). This knee is compute-bound; long-context workloads would hit memory first and knee earlier.
+
+Cost per million generated tokens (price assumption: `g5.xlarge` on-demand us-east-1 at ~$1.01/hr; spot varies ~$0.35-0.50/hr):
+- At the 2,054 tok/s operating point: ~7.4M tokens/hr, so roughly $0.14/M tokens on-demand, $0.05-0.07/M on spot.
+- Generation tokens only; prompt tokens excluded (negligible in this workload).
+
+## GPU capacity events log
+
+- 2026-08-20/21: `g5.xlarge` spot dry in both AZs (`UnfulfillableCapacity`). Fixed by widening 2 pools to 8 (4 types x 2 AZs).
+- 2026-08-24: all 8 spot pools dry, and g6 (L4) on-demand also dry in both AZs. A10G on-demand available. Lessons:
+  - Spot and on-demand draw from the same physical pools. An on-demand quota is a hedge against spot reclaim and pricing, not against regional hardware scarcity. Capacity independence requires different families, AZs, or regions.
+  - On-demand managed nodegroups appeared to retry only the first entry of `instanceTypes` rather than falling back down the list (observed via ASG scaling activities; not documented behavior). Fix was reordering the list to lead with the available family.
+  - Keep a pre-approved on-demand fallback nodegroup config in the repo (`gpu-od-nodegroup.yaml`), scaled to 0. On the drought day it was one command to activate.
