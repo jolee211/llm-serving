@@ -1,0 +1,19 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: llm-serving
+  region: us-east-1
+  version: "1.36"
+
+vpc:
+  nat:
+    gateway: Disable
+
+managedNodeGroups:
+  - name: cpu
+    instanceType: t3.medium
+    desiredCapacity: 2
+    minSize: 2
+    maxSize: 2
+    privateNetworking: false
