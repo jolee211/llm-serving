@@ -86,6 +86,39 @@ Cost per million generated tokens (price assumption: `g5.xlarge` on-demand us-ea
 - At the 2,054 tok/s operating point: ~7.4M tokens/hr, so roughly $0.14/M tokens on-demand, $0.05-0.07/M on spot.
 - Generation tokens only; prompt tokens excluded (negligible in this workload).
 
+## KEDA autoscaling (2026-08-26/27)
+
+Autoscaling on inference-native signals, per the knee-sweep finding: continuous batching means `num_requests_waiting` stays at 0 while per-token speed degrades, so queue depth is the wrong trigger. Scale on running-request count instead.
+
+ScaledObject (`vllm-scaledobject.yaml`): Prometheus trigger on `sum(vllm:num_requests_running)`, threshold 24 (75% of the measured knee at 32), minReplicas 1, maxReplicas 2, cooldown 300s.
+
+### What happened live (2026-08-26)
+
+- 64-VU load: HPA saw 64/24 within one 15s poll, desired went to 2. Per-pod average settled ~31, right at the operating point. The policy math worked exactly as designed.
+- **Thrash cycle, observed:** the 3-min load ended inside the new replica's cold start. Cooldown (300s) fired before the pod went Ready, and KEDA killed it mid-warmup. The replica died in `Error` having never served a request. Cooldown shorter than worst-case cold start is pure waste: you pay for the GPU node and get zero requests out of it.
+- **Warm-node scale-out, measured:** a second scale-out landed on a node that already had the vLLM image cached: pod Ready in 2m50s vs ~10 min on a fresh node. Image caching is worth ~7 min; the remaining ~3 min is the model download (per-pod `emptyDir`).
+
+Timeline screenshots: `keda-loadtest-dashboard.png` (both cycles, all serving metrics), `keda-thrash-timeline.png` (desired vs ready replicas with the thrash visible).
+
+### Clean 1-vs-2 replica comparison (2026-08-27, same day, warm pods, 64 VUs, 3 min each)
+
+| Replicas | req/s | p95 e2e | Failures | Notes |
+|---|---|---|---|---|
+| 1 | 43.2 | 1.87s | 0 | Saturated; reproduces the 08-24 knee-sweep 64-VU result (43 req/s, 1.88s) |
+| 2 | 81.0 | 1.05s | 0 | Load split 26/35 running requests across pods |
+
+1.87x throughput at 2 replicas with p95 cut 44%. Near-linear, as expected for replica-parallel serving with a service-level round-robin. Screenshot: `keda-1v2-replica-comparison.png` (2-replica run left, 1-replica run right).
+
+Also observed: two pods cold-starting in parallel on two fresh on-demand nodes both went Ready in 8m28s from the scale command (~7m20s pod-to-Ready each). Parallel cold start does not stack; the fleet warms in one cold-start window, not N.
+
+### Mitigations (ranked)
+
+1. **Cooldown > worst-case cold start.** 300s cooldown vs ~10 min cold start guarantees thrash on short bursts. Set cooldown (or a scale-in stabilization window) above the measured worst-case Ready time, ~900s here.
+2. **Model cache on a PVC** instead of per-pod `emptyDir`: kills the ~3 min re-download on every pod start. Next planned change.
+3. **Pre-pulled images** (DaemonSet warmer or baked AMI): kills the ~7 min pull on fresh nodes.
+4. **Business-hours minReplicas** if traffic has a known floor: the cheapest latency insurance is a replica that already exists.
+5. Karpenter for right-sized GPU node provisioning: future work.
+
 ## GPU capacity events log
 
 - 2026-08-20/21: `g5.xlarge` spot dry in both AZs (`UnfulfillableCapacity`). Fixed by widening 2 pools to 8 (4 types x 2 AZs).

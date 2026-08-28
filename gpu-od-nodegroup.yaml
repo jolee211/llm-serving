@@ -10,7 +10,7 @@ managedNodeGroups:
     instanceTypes: ["g5.xlarge", "g5.2xlarge"]
     desiredCapacity: 1
     minSize: 0
-    maxSize: 1
+    maxSize: 2
     volumeSize: 100
     labels:
       workload: gpu
