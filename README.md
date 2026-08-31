@@ -164,9 +164,16 @@ Default `maxSurge: 25%` rounds up to 1, so Kubernetes tries to create the replac
 
 `teardown-cluster.sh` runs the whole sequence in the right order and verifies four things are empty at the end: clusters, instances, filesystems, volumes. Use it instead of a bare `eksctl delete cluster`.
 
-### Gotcha: EFS mount targets block cluster teardown
+### Gotcha: EFS blocks cluster teardown, twice, in two different ways
 
-`eksctl delete cluster` fails at the subnet delete with a bare "has dependencies" error. The cause is the EFS mount target ENIs living in those subnets. Delete mount targets and the filesystem first, then re-run the stack delete. Teardown order: cluster delete, mount targets, filesystem, EFS security group, then retry the cluster stack.
+Adding EFS to the cluster made teardown a two-stage failure, and the fix is ordering rather than retries.
+
+1. `eksctl delete cluster` fails at the **subnet** delete with a bare "has dependencies" error. Cause: the EFS mount target ENIs live in those subnets.
+2. Clear the mount targets and it then fails at the **VPC** delete, same unhelpful message. Cause: the EFS security group's ingress rule references the EKS cluster security group. That reference prevents EKS from deleting its own cluster SG during teardown, so the SG is orphaned and holds the VPC open.
+
+The second one is the nastier failure, because the cluster is already gone by the time you see it. The API returns 404 for the cluster while its security group is still holding a VPC you cannot delete.
+
+Correct order, scripted in `teardown-cluster.sh`: EFS mount targets, EFS filesystem, **EFS security group, then** the cluster. Removing the SG before the cluster delete lets EKS clean up its own SG normally.
 
 ## GPU capacity events log
 
