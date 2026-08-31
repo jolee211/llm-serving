@@ -56,8 +56,14 @@ spec:
               mountPath: /dev/shm
       volumes:
         - name: hf-cache
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: hf-cache
         - name: shm
           emptyDir:
             medium: Memory
             sizeLimit: 2Gi
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1

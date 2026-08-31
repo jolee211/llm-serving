@@ -36,12 +36,19 @@ Scaling the GPU nodegroup from 0 to serving traffic is not fast. The observed ch
 4. Model download: ~5.5GB of AWQ weights from Hugging Face into an `emptyDir`.
 5. vLLM engine init and weight load, then `/health` goes green.
 
-End to end, measured: 10m07s from scale-up command to pod Ready (2026-08-23, fresh spot node, `g6.2xlarge`, timed with `time kubectl wait --for=condition=Ready`). Once warm, the smoke-test completion returned near-instantly. Formal p50/p99 and tokens/sec land with the k6 load run (next phase); no latency numbers are claimed here until then.
+End to end, measured: 10m07s from scale-up command to pod Ready (2026-08-23, fresh spot node, `g6.2xlarge`, timed with `time kubectl wait --for=condition=Ready`).
+
+Be precise about the measurement boundary, because two different numbers get quoted for "cold start":
+
+- **Command to serving: ~10 min.** Includes node provisioning and cluster join (~2-3 min).
+- **Pod scheduled to Ready: 7m20s.** Measured twice on separate days and node sets (2026-08-27 and 2026-08-28, `g5.xlarge`/A10G), which makes it the reproducible figure.
+
+The 7m20s splits roughly into 4-5 min image pull and ~3 min model download plus engine init.
 
 Why it matters:
 - Scale-to-zero saves GPU dollars overnight but buys a 10-15 min cold start every morning. That tradeoff is the whole game for spot-based inference fleets.
 - The two big levers are the image pull and the model download, and both are cacheable:
-  - Persistent model cache (PVC or S3 sync) instead of `emptyDir`, so weights survive pod restarts.
+  - Persistent model cache (PVC or S3 sync) instead of `emptyDir`, so weights survive pod restarts. Built and measured on 2026-08-28, see the EFS model cache section below.
   - Pre-pulled or node-baked images, so a fresh spot node does not start from a cold registry.
 - Spot preemption means this chain can rerun at any time, uninvited. Cold start is not just a morning event, it is the recovery path.
 
@@ -118,6 +125,48 @@ Also observed: two pods cold-starting in parallel on two fresh on-demand nodes b
 3. **Pre-pulled images** (DaemonSet warmer or baked AMI): kills the ~7 min pull on fresh nodes.
 4. **Business-hours minReplicas** if traffic has a known floor: the cheapest latency insurance is a replica that already exists.
 5. Karpenter for right-sized GPU node provisioning: future work.
+
+## Model cache on EFS (2026-08-28)
+
+The 08-26 thrash finding pointed at the model download as the remaining cold-start cost after image caching. This closes that loop.
+
+### Why EFS and not EBS
+
+The obvious move is an EBS PVC. It does not work for this workload. EBS is ReadWriteOnce and AZ-bound, and each vLLM pod owns a whole GPU, so there is one pod per node. A single EBS volume cannot be mounted by a second replica on a second node, which is exactly the scale-out case the cold start hurts. EFS is ReadWriteMany across AZs, so a fresh replica on a fresh node mounts a cache that is already populated.
+
+Setup: EFS filesystem, one mount target per node subnet, `aws-efs-csi-driver` addon, and a static PV bound to the filesystem ID (`hf-cache-pv.yaml`). IAM went on the node instance role rather than IRSA, since OIDC is not associated on this ephemeral cluster. That is broader than production should be and is a deliberate lab shortcut, not a recommendation.
+
+### Measurements (all `g5.xlarge`/A10G, same node where noted)
+
+| Run | Node | Cache | Start to Ready |
+|---|---|---|---|
+| Fresh node, `emptyDir` | fresh | none | 7m20s |
+| Warm node, EFS cold | warm | populating | 2m20s |
+| Warm node, EFS warm | warm | hit | **1m50s** |
+
+Cache miss vs cache hit on identical infrastructure: 30s saved, ~21%. Against the 08-26 warm-node `emptyDir` figure of 2m50s it is a full minute (~35%), though that comparison spans sessions.
+
+### The actual finding
+
+Caching the weights did not just shrink the cold start, it moved the bottleneck. Breakdown of the 110s warm-cache start:
+
+- ~23s container start
+- 8.6s weight prefetch into page cache, 11.3s model load: **the EFS read is only ~20s**
+- 34.5s engine init, **of which 19.8s is torch.compile**
+
+Model fetch is no longer the constraint. Engine initialization is. Note that only `/root/.cache/huggingface` is on EFS; vLLM's torch.compile cache lives at `/root/.cache/vllm` on the container's ephemeral layer, so every new pod recompiles. Mounting that path on the same volume is the next cheap win and is untested here.
+
+### Gotcha: rolling updates deadlock on GPU-bound pods
+
+Default `maxSurge: 25%` rounds up to 1, so Kubernetes tries to create the replacement pod before terminating the old one. With one GPU on one node the new pod sits `Pending` on `Insufficient nvidia.com/gpu` while the old pod holds the GPU, forever. Set `maxSurge: 0, maxUnavailable: 1`. When every pod owns a whole accelerator and nodes are the scarce resource, surge-first updates can never schedule.
+
+### Teardown
+
+`teardown-cluster.sh` runs the whole sequence in the right order and verifies four things are empty at the end: clusters, instances, filesystems, volumes. Use it instead of a bare `eksctl delete cluster`.
+
+### Gotcha: EFS mount targets block cluster teardown
+
+`eksctl delete cluster` fails at the subnet delete with a bare "has dependencies" error. The cause is the EFS mount target ENIs living in those subnets. Delete mount targets and the filesystem first, then re-run the stack delete. Teardown order: cluster delete, mount targets, filesystem, EFS security group, then retry the cluster stack.
 
 ## GPU capacity events log
 
