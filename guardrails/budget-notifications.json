@@ -1,0 +1,29 @@
+[
+  {
+    "Notification": {
+      "NotificationType": "ACTUAL",
+      "ComparisonOperator": "GREATER_THAN",
+      "Threshold": 40,
+      "ThresholdType": "PERCENTAGE"
+    },
+    "Subscribers": [{"SubscriptionType": "EMAIL", "Address": "jolee211@icloud.com"}]
+  },
+  {
+    "Notification": {
+      "NotificationType": "ACTUAL",
+      "ComparisonOperator": "GREATER_THAN",
+      "Threshold": 100,
+      "ThresholdType": "PERCENTAGE"
+    },
+    "Subscribers": [{"SubscriptionType": "EMAIL", "Address": "jolee211@icloud.com"}]
+  },
+  {
+    "Notification": {
+      "NotificationType": "FORECASTED",
+      "ComparisonOperator": "GREATER_THAN",
+      "Threshold": 100,
+      "ThresholdType": "PERCENTAGE"
+    },
+    "Subscribers": [{"SubscriptionType": "EMAIL", "Address": "jolee211@icloud.com"}]
+  }
+]
