@@ -5,10 +5,23 @@ metadata:
   name: llm-serving
   region: us-east-1
   version: "1.36"
+  tags:
+    Project: llm-serving
+    Owner: Joseph
+    Environment: personal-lab
+    TeardownPolicy: same-day
+
+iam:
+  withOIDC: true
 
 vpc:
   nat:
     gateway: Disable
+
+addons:
+  - name: aws-efs-csi-driver
+    attachPolicyARNs:
+      - arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy
 
 managedNodeGroups:
   - name: cpu
@@ -17,3 +30,9 @@ managedNodeGroups:
     minSize: 2
     maxSize: 2
     privateNetworking: false
+    volumeEncrypted: true
+    tags:
+      Project: llm-serving
+      Owner: Joseph
+      Environment: personal-lab
+      TeardownPolicy: same-day

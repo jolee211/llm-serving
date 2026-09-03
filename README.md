@@ -182,3 +182,22 @@ Correct order, scripted in `teardown-cluster.sh`: EFS mount targets, EFS filesys
   - Spot and on-demand draw from the same physical pools. An on-demand quota is a hedge against spot reclaim and pricing, not against regional hardware scarcity. Capacity independence requires different families, AZs, or regions.
   - On-demand managed nodegroups appeared to retry only the first entry of `instanceTypes` rather than falling back down the list (observed via ASG scaling activities; not documented behavior). Fix was reordering the list to lead with the available family.
   - Keep a pre-approved on-demand fallback nodegroup config in the repo (`gpu-od-nodegroup.yaml`), scaled to 0. On the drought day it was one command to activate.
+
+## Cost-safe lifecycle
+
+The account stays empty between experiments. Both lifecycle scripts plan by default and require an interactive approval before every AWS or Kubernetes mutation:
+
+```bash
+AWS_PROFILE=personal ./rebuild-cluster.sh --plan
+AWS_PROFILE=personal ./teardown-cluster.sh --plan
+```
+
+Rebuild creates the complete lab, including the encrypted EFS cache and KEDA, while keeping both GPU node groups at zero. Teardown deletes EFS dependencies before EKS and fails if the final all-region inventory finds anything.
+
+Run the read-only verifier after every session:
+
+```bash
+AWS_PROFILE=personal ./guardrails/verify-zero-cost.sh
+```
+
+Exit 0 means the complete scan found no billable or residual infrastructure. Any finding, failed inventory call, wrong profile, expired session, or account mismatch returns nonzero. See `guardrails/README.md` for the exact exit codes and nightly automation behavior.

@@ -1,21 +1,24 @@
-# Static EFS PV for the Hugging Face model cache.
-# volumeHandle is the EFS filesystem id and is recreated with every cluster rebuild.
-# Set it from: aws efs create-file-system ... --query FileSystemId --output text
+# Static EFS volume for the disposable Hugging Face model cache.
+# rebuild-cluster.sh replaces the token in a temporary copy; never commit an ID.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: hf-cache
+  labels:
+    project: llm-serving
 spec:
   capacity: {storage: 20Gi}
   accessModes: [ReadWriteMany]
   persistentVolumeReclaimPolicy: Retain
   storageClassName: efs-sc
-  csi: {driver: efs.csi.aws.com, volumeHandle: fs-0e3d8ae589fde5a92}
+  csi: {driver: efs.csi.aws.com, volumeHandle: __EFS_FILE_SYSTEM_ID__}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: hf-cache
+  labels:
+    project: llm-serving
 spec:
   accessModes: [ReadWriteMany]
   storageClassName: efs-sc
